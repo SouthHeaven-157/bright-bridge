@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.npm-cache/
+
+# Next.js
+.next/
+out/
+
+# Other build and test output
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Tool caches and temporary files
+.turbo/
+.swc/
+.cache/
+.qa/
+.edge-profile/
+.tmp/
+tmp/
+temp/
+*.tmp
+*.temp
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Hosting and local runtime state
+.vercel/
+.sites-runtime/
+
+# Editor files
+.idea/
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
