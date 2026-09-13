@@ -14,18 +14,27 @@ export type FlavorProfile = {
   body: number;
 };
 
+export type MoodProfile = {
+  valence: number;
+};
+
 export type LiquidVisualState = {
   level: number;
   color: RgbColor;
   opacity: number;
   fizz: number;
   cloudiness: number;
+  viscosity: number;
+  foam: number;
 };
+
+export type FlavorKey = keyof FlavorProfile;
 
 export type DrinkState = {
   ingredients: DrinkIngredient[];
   totalPct: number;
   flavor: FlavorProfile;
+  mood: MoodProfile;
   liquid: LiquidVisualState;
 };
 

@@ -33,6 +33,8 @@
 - 可选技术参考：`docs/09-reference-projects.md`
 - 视觉资产替换：`docs/10-视觉资产替换规范.md`
 - 流程与资产集中修改点：`docs/11-集中修改点索引.md`
+- 配料参数：`docs/12-配料参数表.md`
+- AI 酒名与 Drink Card：`docs/14-AI酒名与DrinkCard接入规范.md`
 - 每日记录：`开发日志/YYYY-MM-DD.md`
 
 `docs/09-reference-projects.md` 仅作为可选技术参考，不是强制实现模板。不要为了贴近参考仓库而增加依赖或限制更优实现；若其内容与当前项目规范冲突，以当前项目 `docs/` 和用户最新需求为准。

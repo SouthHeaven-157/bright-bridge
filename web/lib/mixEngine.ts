@@ -14,12 +14,17 @@ const EMPTY_DRINK: DrinkState = {
     freshness: 0,
     body: 0,
   },
+  mood: {
+    valence: 0,
+  },
   liquid: {
     level: 0,
     color: { r: 0, g: 0, b: 0 },
     opacity: 0,
     fizz: 0,
     cloudiness: 0,
+    viscosity: 0,
+    foam: 0,
   },
 };
 
@@ -58,7 +63,7 @@ export function mixDrink(recipe: readonly DrinkIngredient[]): DrinkState {
     return structuredClone(EMPTY_DRINK);
   }
 
-  const weighted = (property: "sweetness" | "acidity" | "bitterness" | "abv" | "freshness" | "body" | "opacity" | "fizz" | "cloudiness") =>
+  const weighted = (property: "sweetness" | "acidity" | "bitterness" | "abv" | "freshness" | "body" | "moodValence" | "opacity" | "fizz" | "cloudiness" | "viscosity" | "foam") =>
     ingredients.reduce((sum, item) => {
       const ingredient = INGREDIENTS_BY_ID.get(item.ingredientId)!;
       return sum + ingredient[property] * item.amountPct;
@@ -87,6 +92,9 @@ export function mixDrink(recipe: readonly DrinkIngredient[]): DrinkState {
       freshness: clamp(weighted("freshness")),
       body: clamp(weighted("body")),
     },
+    mood: {
+      valence: clamp(weighted("moodValence"), -1, 1),
+    },
     liquid: {
       level: totalPct / GAMEPLAY_CONFIG.maxTotalPct,
       color: {
@@ -97,6 +105,8 @@ export function mixDrink(recipe: readonly DrinkIngredient[]): DrinkState {
       opacity: clamp(weighted("opacity")),
       fizz: clamp(weighted("fizz")),
       cloudiness: clamp(weighted("cloudiness")),
+      viscosity: clamp(weighted("viscosity")),
+      foam: clamp(weighted("foam")),
     },
   };
 }

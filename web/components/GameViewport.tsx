@@ -5,10 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { BarScene } from "./BarScene";
 import { DrinkCard } from "./DrinkCard";
-import { IngredientShelf } from "./IngredientShelf";
+import { GlassSelector } from "./GlassSelector";
 import { ServeControl } from "./ServeControl";
 import { GAMEPLAY_CONFIG } from "../lib/gameConfig";
-import { INGREDIENTS_BY_ID } from "../lib/ingredients";
+import { generateDrinkStory, type DrinkStory, type DrinkStoryStatus } from "../lib/ai/generateDrinkStory";
+import { DEFAULT_GLASS_TYPE, GLASS_TYPES_BY_ID, type GlassType } from "../lib/glassTypes";
+import { INGREDIENTS, INGREDIENTS_BY_ID } from "../lib/ingredients";
 import { createDrinkState, incrementIngredient, setRecipe } from "../lib/mixEngine";
 import type { DragState, DrinkIngredient, DrinkState, SceneState } from "../types/drink";
 import type { Ingredient, IngredientId } from "../types/ingredient";
@@ -46,6 +48,9 @@ export function GameViewport() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [parallax, setParallax] = useState({ x: 0, y: 0 });
   const [sceneState, setSceneState] = useState<SceneState>("mixing");
+  const [glassType, setGlassType] = useState<GlassType>(DEFAULT_GLASS_TYPE);
+  const [drinkStory, setDrinkStory] = useState<DrinkStory | null>(null);
+  const [drinkStoryStatus, setDrinkStoryStatus] = useState<DrinkStoryStatus>("idle");
 
   const pourZoneRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
@@ -55,6 +60,8 @@ export function GameViewport() {
   const serveCancellationRef = useRef<((reason: Error) => void) | null>(null);
   const drinkRef = useRef(drink);
   const sceneStateRef = useRef(sceneState);
+  const storyAbortRef = useRef<AbortController | null>(null);
+  const storyRequestIdRef = useRef(0);
 
   useEffect(() => {
     drinkRef.current = drink;
@@ -203,6 +210,8 @@ export function GameViewport() {
       if (serveTimerRef.current) clearTimeout(serveTimerRef.current);
       serveCancellationRef.current?.(new Error("Serve was cancelled because the game closed"));
       serveCancellationRef.current = null;
+      storyAbortRef.current?.abort();
+      storyAbortRef.current = null;
     };
   }, [clearPourTimer, finishDrag]);
 
@@ -252,12 +261,37 @@ export function GameViewport() {
     updateDrink((current) => incrementIngredient(current, ingredient.id, GAMEPLAY_CONFIG.pourStepPct));
   }, [updateDrink]);
 
+  const requestDrinkStory = useCallback(async (finalDrink: DrinkState, finalGlassType: GlassType) => {
+    storyAbortRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = storyRequestIdRef.current + 1;
+    storyRequestIdRef.current = requestId;
+    storyAbortRef.current = controller;
+    setDrinkStory(null);
+    setDrinkStoryStatus("loading");
+
+    try {
+      const story = await generateDrinkStory(finalDrink, finalGlassType, controller.signal);
+      if (storyRequestIdRef.current !== requestId) return;
+      setDrinkStory(story);
+      setDrinkStoryStatus("success");
+    } catch {
+      if (controller.signal.aborted || storyRequestIdRef.current !== requestId) return;
+      setDrinkStory(null);
+      setDrinkStoryStatus("error");
+    } finally {
+      if (storyRequestIdRef.current === requestId) storyAbortRef.current = null;
+    }
+  }, []);
+
   const beginServe = useCallback(async () => {
     if (sceneStateRef.current !== "mixing" || drinkRef.current.totalPct <= 0) return false;
 
+    const finalDrink = structuredClone(drinkRef.current);
     finishDrag();
     sceneStateRef.current = "serving";
     setSceneState("serving");
+    void requestDrinkStory(finalDrink, glassType);
 
     await new Promise<void>((resolve, reject) => {
       serveCancellationRef.current = reject;
@@ -271,7 +305,7 @@ export function GameViewport() {
     });
 
     return true;
-  }, [finishDrag]);
+  }, [finishDrag, glassType, requestDrinkStory]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: WebMcpContext }).modelContext;
@@ -293,7 +327,7 @@ export function GameViewport() {
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: false },
       execute() {
-        return structuredClone(drinkRef.current);
+        return { ...structuredClone(drinkRef.current), glassType };
       },
     });
 
@@ -364,7 +398,7 @@ export function GameViewport() {
     });
 
     return () => lifecycle.abort();
-  }, [beginServe, finishDrag]);
+  }, [beginServe, finishDrag, glassType]);
 
   const statusLabel = sceneState === "mixing"
     ? drag.isPouring ? "POURING" : "MIXING"
@@ -375,6 +409,9 @@ export function GameViewport() {
 
   const resetDrink = useCallback(() => {
     finishDrag();
+    storyAbortRef.current?.abort();
+    storyAbortRef.current = null;
+    storyRequestIdRef.current += 1;
     if (serveTimerRef.current) {
       clearTimeout(serveTimerRef.current);
       serveTimerRef.current = null;
@@ -384,7 +421,14 @@ export function GameViewport() {
     sceneStateRef.current = "mixing";
     setDrink(next);
     setSceneState("mixing");
+    setDrinkStory(null);
+    setDrinkStoryStatus("idle");
   }, [finishDrag]);
+
+  const retryDrinkStory = useCallback(() => {
+    if (sceneStateRef.current !== "result" || drinkRef.current.totalPct <= 0) return;
+    void requestDrinkStory(structuredClone(drinkRef.current), glassType);
+  }, [glassType, requestDrinkStory]);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -423,26 +467,23 @@ export function GameViewport() {
           drink={drink}
           parallax={parallax}
           sceneState={sceneState}
+          glassType={glassType}
+          canInteract={canInteract}
+          dragOffset={dragOffset}
+          onBottlePointerDown={handleBottlePointerDown}
+          onPointerCaptureLost={handlePointerCaptureLost}
+          onKeyboardPour={handleKeyboardPour}
         />
 
         <section className={`control-deck ${sceneState !== "mixing" ? "is-locked" : ""}`} aria-label="调酒控制区域">
           <div className="deck-heading">
-            <span>INGREDIENT ARRAY</span>
-            <b>{ingredientCount}/8 ACTIVE</b>
+            <span>GLASSWARE SELECT</span>
+            <b>{GLASS_TYPES_BY_ID.get(glassType)?.labelZh}</b>
           </div>
-          <IngredientShelf
-            activeIngredientId={drag.activeIngredientId}
-            disabled={!canInteract}
-            ingredients={drink.ingredients}
-            isPouring={drag.isPouring}
-            offset={dragOffset}
-            onPointerDown={handleBottlePointerDown}
-            onPointerCaptureLost={handlePointerCaptureLost}
-            onKeyboardPour={handleKeyboardPour}
-          />
+          <GlassSelector selected={glassType} disabled={sceneState !== "mixing"} onSelect={setGlassType} />
 
           <div className="serve-row">
-            <p>DRAG A BOTTLE TO THE GLASS</p>
+            <p>BOTTLES ON RACK · {ingredientCount}/{INGREDIENTS.length} USED</p>
             <ServeControl
               disabled={drink.totalPct <= 0 || sceneState !== "mixing"}
               totalPct={drink.totalPct}
@@ -451,7 +492,15 @@ export function GameViewport() {
           </div>
         </section>
 
-        <DrinkCard drink={drink} sceneState={sceneState} onReset={resetDrink} />
+        <DrinkCard
+          drink={drink}
+          glassType={glassType}
+          sceneState={sceneState}
+          story={drinkStory}
+          storyStatus={drinkStoryStatus}
+          onRetryStory={retryDrinkStory}
+          onReset={resetDrink}
+        />
       </section>
     </main>
     </MotionConfig>
