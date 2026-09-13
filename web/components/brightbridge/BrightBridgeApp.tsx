@@ -449,8 +449,15 @@ function App() {
     r.interimResults = true
     setListening(true); setInterim('')
     r.onresult = (e: SREvent) => {
-      const res = e.results[e.results.length - 1]
-      const text = res[0].transcript
+      // Chrome may split one sentence into several result entries. Inspect
+      // the complete recognition buffer so a trigger is not missed when the
+      // words arrive in separate chunks (e.g. “情绪” then “酒馆”).
+      let text = ''
+      let final = true
+      for (let i = 0; i < e.results.length; i += 1) {
+        text += e.results[i][0].transcript
+        if (!e.results[i].isFinal) final = false
+      }
       const spoken = text.trim()
       // 浏览器有时只给临时结果就结束识别，触发词不必等待 isFinal。
       if (shouldOpenEmotionTavern(spoken)) {
@@ -458,7 +465,7 @@ function App() {
         window.location.assign(EMOTION_TAVERN_PATH)
         return
       }
-      if (res.isFinal) {
+      if (final) {
         setListening(false); setInterim('')
         if (spoken) setTask(spoken)
       } else setInterim(text)
