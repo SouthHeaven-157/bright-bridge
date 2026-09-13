@@ -41,9 +41,14 @@ function parseStory(content: string): DrinkStory {
 export async function POST(request: Request) {
   if (isRateLimited(request)) return Response.json({ error: "Too many requests" }, { status: 429 });
 
-  const apiKey = process.env.AI_API_KEY;
-  const apiBase = (process.env.AI_API_BASE_URL ?? "https://api.openai-next.com/v1").replace(/\/$/, "");
-  const model = process.env.AI_MODEL ?? "gpt-4o-mini";
+  // Use the BrightBridge-compatible provider when configured so the tavern
+  // and bridge share the same user-supplied model endpoint.
+  const apiKey = process.env.BRIDGE_LLM_API_KEY || process.env.AI_API_KEY;
+  const configuredUrl = process.env.BRIDGE_LLM_API_URL;
+  const apiUrl = configuredUrl
+    ? configuredUrl.replace(/\/$/, "")
+    : `${(process.env.AI_API_BASE_URL ?? "https://api.openai-next.com/v1").replace(/\/$/, "")}/chat/completions`;
+  const model = process.env.BRIDGE_LLM_MODEL || process.env.AI_MODEL || "gpt-4o-mini";
   if (!apiKey) return Response.json({ error: "AI service is not configured" }, { status: 503 });
 
   try {
@@ -92,7 +97,7 @@ export async function POST(request: Request) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
-      const upstream = await fetch(`${apiBase}/chat/completions`, {
+      const upstream = await fetch(apiUrl, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
