@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 type Persona = "child" | "senior";
 type ApiResult = { status: number; body: Record<string, unknown> };
 
@@ -18,6 +22,63 @@ const COURSE_SYSTEM = `你是培智学校的生活技能课老师。把用户想
 
 const VISION_FRAMES_SYSTEM = `根据同一场景的多张图片，判断练习者最可能想学的 1 到 3 个生活任务。只根据真实出现的人和物判断。只返回严格 JSON：{"practices":[{"task":"最多20字"}]}。无法判断时返回 {"practices":[]}。`;
 const VISION_CHECK_SYSTEM = `你是耐心的生活技能助教。根据摄像头图片和当前操作说明判断用户是否跟上。只返回严格 JSON：{"onTrack":true,"hint":"最多30字的中文指导"}。`;
+
+const CACHE_DIR = join(process.cwd(), ".cache", "courses");
+const MAX_CACHE_BYTES = 1024 * 1024 * 1024;
+type CacheMeta = { hits: number; lastUsed: number; size: number; createdAt: number };
+
+function cacheKey(task: string, persona: string, images: string[] = []) {
+  const fingerprint = images.length
+    ? images.map((image) => `${image.length}:${image.slice(24, 96)}`).join("|")
+    : "";
+  return createHash("md5").update(`${persona}:${task}:${fingerprint}`).digest("hex");
+}
+
+async function readCacheMeta(base: string): Promise<CacheMeta> {
+  try { return JSON.parse(await readFile(`${base}.meta.json`, "utf8")) as CacheMeta; }
+  catch { return { hits: 0, lastUsed: 0, size: 0, createdAt: 0 }; }
+}
+
+async function cacheGet(task: string, persona: string, images: string[]) {
+  const base = join(CACHE_DIR, cacheKey(task, persona, images));
+  try {
+    const html = await readFile(`${base}.html`, "utf8");
+    const meta = await readCacheMeta(base);
+    await writeFile(`${base}.meta.json`, JSON.stringify({ ...meta, hits: meta.hits + 1, lastUsed: Date.now() }), "utf8");
+    return html;
+  } catch { return null; }
+}
+
+async function evictCacheIfNeeded() {
+  try {
+    const files = (await readdir(CACHE_DIR)).filter((file) => file.endsWith(".html"));
+    const entries = await Promise.all(files.map(async (file) => {
+      const base = join(CACHE_DIR, file.slice(0, -5));
+      const meta = await readCacheMeta(base);
+      if (!meta.size) { try { meta.size = (await stat(`${base}.html`)).size; } catch { meta.size = 0; } }
+      return { base, meta };
+    }));
+    let total = entries.reduce((sum, entry) => sum + entry.meta.size, 0);
+    if (total <= MAX_CACHE_BYTES) return;
+    entries.sort((a, b) => a.meta.hits - b.meta.hits || a.meta.lastUsed - b.meta.lastUsed);
+    for (const entry of entries) {
+      if (total <= MAX_CACHE_BYTES) break;
+      await Promise.allSettled([unlink(`${entry.base}.html`), unlink(`${entry.base}.meta.json`)]);
+      total -= entry.meta.size;
+    }
+  } catch { /* cache is optional */ }
+}
+
+async function cachePut(task: string, persona: string, images: string[], html: string) {
+  try {
+    await mkdir(CACHE_DIR, { recursive: true });
+    const base = join(CACHE_DIR, cacheKey(task, persona, images));
+    await writeFile(`${base}.html`, html, "utf8");
+    const now = Date.now();
+    await writeFile(`${base}.meta.json`, JSON.stringify({ hits: 1, lastUsed: now, size: Buffer.byteLength(html), createdAt: now }), "utf8");
+    await evictCacheIfNeeded();
+  } catch { /* cache is optional */ }
+}
 
 function modelConfig() {
   const fallbackBase = process.env.AI_API_BASE_URL?.replace(/\/$/, "");
@@ -90,6 +151,13 @@ export async function generateBridgeCourse(input: unknown): Promise<ApiResult> {
   const images = imagesFrom(body.images, 3);
   if (!task || task.length > 120) return { status: 400, body: { error: "请输入想学的事情。" } };
   if (persona !== "child" && persona !== "senior") return { status: 400, body: { error: "练习模式不正确。" } };
+  const cached = await cacheGet(task, persona, images);
+  if (cached) {
+    const problem = roughCheck(cached);
+    if (!problem) return { status: 200, body: { html: cached, source: "cache" } };
+    const base = join(CACHE_DIR, cacheKey(task, persona, images));
+    await Promise.allSettled([unlink(`${base}.html`), unlink(`${base}.meta.json`)]);
+  }
   if (!bridgeHealth().body.configured) return { status: 503, body: { error: "服务端还没有配置模型密钥。", fallback: true } };
   const who = persona === "senior" ? "老年人或数字新手" : "培智学生或儿童";
   const text = `练习者：${who}。他要学的事情：${task}`;
@@ -108,6 +176,7 @@ export async function generateBridgeCourse(input: unknown): Promise<ApiResult> {
       problem = roughCheck(html);
     }
     if (problem) return { status: 502, body: { error: `AI 生成的界面未通过检查：${problem}`, fallback: true } };
+    await cachePut(task, persona, images, html);
     return { status: 200, body: { html, source: "ai" } };
   } catch (error) {
     const timeout = error instanceof Error && error.name === "AbortError";
